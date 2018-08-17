@@ -3,6 +3,8 @@ package tftp
 import (
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"math"
 	"net"
 	"sync"
@@ -31,71 +33,70 @@ type server struct {
 	store       Storage
 	chanMap     map[string]chan []byte
 	chanMapLock sync.RWMutex
+	requestLog  *log.Logger
 }
 
+// WrappedPacket stores the destination address and a serialized tftp packet
 type WrappedPacket struct {
 	data []byte
 	addr net.Addr
 }
 
 // NewServer constructs a tftp server with the supplied connection and storage
-func NewServer(conn net.PacketConn, store Storage) *server {
+func NewServer(conn net.PacketConn, store Storage, requestLogWriter io.Writer) *server {
 	chanMap := make(map[string]chan []byte)
-	return &server{conn: conn, store: store, chanMap: chanMap}
+	return &server{conn: conn, store: store, chanMap: chanMap, requestLog: log.New(requestLogWriter, "", log.LstdFlags)}
 }
 
 func (s *server) readConnection(ch chan WrappedPacket) {
-	var recvBuffer [1024]byte
-	read, dest, err := s.conn.ReadFrom(recvBuffer[:])
-	if err != nil {
-		return
-	}
+	for {
+		var recvBuffer [1024]byte
+		read, dest, err := s.conn.ReadFrom(recvBuffer[:])
+		fmt.Println("Received a packet from ", dest)
+		if err != nil {
+			return
+		}
 
-	packet := WrappedPacket{addr: dest, data: recvBuffer[0:read]}
-	ch <- packet
+		packet := WrappedPacket{addr: dest, data: recvBuffer[0:read]}
+		ch <- packet
+	}
+}
+
+func (s *server) sendConnection(ch chan WrappedPacket) {
+	for {
+		packet := <-ch
+		s.conn.WriteTo(packet.data, packet.addr)
+	}
 }
 
 func (s *server) Start() {
 	netChannel := make(chan WrappedPacket, 1024)
 	recvChannel := make(chan WrappedPacket, 1024)
-	var dest net.Addr
-	var data []byte
 	go s.readConnection(recvChannel)
+	go s.sendConnection(netChannel)
 	for {
-		select {
-		case p := <-netChannel:
-			if _, err := s.conn.WriteTo(p.data, p.addr); err != nil {
-				return
-			}
-			continue
-		case p := <-recvChannel:
-			dest = p.addr
-			data = p.data
-		default:
-			continue
-		}
+		packet := <-recvChannel
 		s.chanMapLock.RLock()
-		if handlerChannel, ok := s.chanMap[dest.String()]; !ok {
+		if handlerChannel, ok := s.chanMap[packet.addr.String()]; !ok {
 			s.chanMapLock.RUnlock()
 			ch := make(chan []byte)
 			go func() {
-				s.handleClient(ch, dest, netChannel)
+				s.handleClient(ch, packet.addr, netChannel)
 			}()
 			s.chanMapLock.Lock()
-			s.chanMap[dest.String()] = ch
-			handlerChannel = s.chanMap[dest.String()]
-			handlerChannel <- data
+			s.chanMap[packet.addr.String()] = ch
+			handlerChannel = s.chanMap[packet.addr.String()]
+			handlerChannel <- packet.data
 			s.chanMapLock.Unlock()
 
 		} else {
-			handlerChannel <- data
+			handlerChannel <- packet.data
 			s.chanMapLock.RUnlock()
 		}
 	}
 }
 
 func (s *server) handleClient(ch chan []byte, addr net.Addr, sendChannel chan WrappedPacket) {
-	fmt.Println("Handling client: ", addr.String())
 	raw := <-ch
 	packet, err := ParsePacket(raw)
 	if err != nil {
@@ -110,21 +111,22 @@ func (s *server) handleClient(ch chan []byte, addr net.Addr, sendChannel chan Wr
 			s.handleWriteRequest(packet.(*PacketRequest), ch, addr, sendChannel)
 		}
 	case *PacketData:
-		fmt.Println("Shouldn't get a data packet here")
+		s.requestLog.Println("Error: Unexpected data packet from ", addr)
 	case *PacketError:
-		fmt.Println("Got an error packet")
+		s.requestLog.Printf("Error: Error packet from %v. Code=%v Message=%s\n", addr, p.Code, p.Msg)
 	case *PacketAck:
-		fmt.Println("Shouldn't get an ack packet here")
+		s.requestLog.Printf("Error: Unexpected ack packet from %v\n", addr)
 	default:
-		fmt.Println("Unknown packet type ", packet)
+		fmt.Println("Error: Unexpected packet type.")
 	}
-	// s.chanMapLock.Lock()
-	// delete(s.chanMap, addr.String())
-	// s.chanMapLock.Unlock()
+	s.chanMapLock.Lock()
+	delete(s.chanMap, addr.String())
+	s.chanMapLock.Unlock()
 	return
 }
 
 func (s *server) handleReadRequest(packet *PacketRequest, ch chan []byte, addr net.Addr, sendChannel chan WrappedPacket) {
+	s.requestLog.Printf("Info: Read request for %s from %s\n", packet.Filename, addr)
 	file, present := s.store.Get(packet.Filename)
 	if !present {
 		ret := PacketError{Code: uint16(FileNotFound), Msg: "No such file"}
@@ -152,7 +154,7 @@ func (s *server) handleReadRequest(packet *PacketRequest, ch chan []byte, addr n
 }
 
 func (s *server) handleWriteRequest(packet *PacketRequest, ch chan []byte, addr net.Addr, sendChannel chan WrappedPacket) {
-	fmt.Println("handling write")
+	s.requestLog.Printf("Info: Write request for %s from %s\n", packet.Filename, addr)
 	_, exists := s.store.Get(packet.Filename)
 	if exists {
 		ret := PacketError{Code: uint16(FileAlreadyExists), Msg: "File Already Exists"}
@@ -166,7 +168,6 @@ func (s *server) handleWriteRequest(packet *PacketRequest, ch chan []byte, addr 
 
 	fileBuf := make([]byte, 0)
 	for {
-		fmt.Println("chunk")
 		buf := <-ch
 		chunk, err := ParsePacket(buf)
 		if err != nil {

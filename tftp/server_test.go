@@ -3,6 +3,7 @@ package tftp
 import (
 	"bytes"
 	"fmt"
+	"io/ioutil"
 	"math"
 	"net"
 	"testing"
@@ -67,7 +68,7 @@ func TestReadChunkedFile(t *testing.T) {
 	conn := MockConn{}
 	store := NewInMemoryStore()
 	store.Store("test.txt", largeFileData)
-	server := NewServer(&conn, store)
+	server := NewServer(&conn, store, ioutil.Discard)
 
 	addr := new(FakeAddr)
 	sender := make(chan []byte)
@@ -102,7 +103,7 @@ func TestReadChunkedFile(t *testing.T) {
 func TestWriteChunkedFile(t *testing.T) {
 	conn := MockConn{}
 	store := NewInMemoryStore()
-	server := NewServer(&conn, store)
+	server := NewServer(&conn, store, ioutil.Discard)
 
 	addr := new(FakeAddr)
 	sender := make(chan []byte)
@@ -149,7 +150,7 @@ func TestReadSmallFile(t *testing.T) {
 	conn := MockConn{}
 	store := NewInMemoryStore()
 	store.Store("smallfile.txt", smallFileData)
-	server := NewServer(&conn, store)
+	server := NewServer(&conn, store, ioutil.Discard)
 
 	addr := new(FakeAddr)
 	sender := make(chan []byte)
@@ -174,7 +175,7 @@ func TestWriteSmallFile(t *testing.T) {
 	smallFileData := []byte("This is a test file")
 	conn := MockConn{}
 	store := NewInMemoryStore()
-	server := NewServer(&conn, store)
+	server := NewServer(&conn, store, ioutil.Discard)
 
 	addr := new(FakeAddr)
 	sender := make(chan []byte)
@@ -225,7 +226,7 @@ func TestLargeFile(t *testing.T) {
 func TestFileNotFound(t *testing.T) {
 	conn := MockConn{}
 	store := NewInMemoryStore()
-	server := NewServer(&conn, store)
+	server := NewServer(&conn, store, ioutil.Discard)
 
 	addr := new(FakeAddr)
 	sender := make(chan []byte)
@@ -253,7 +254,7 @@ func TestDuplicateFile(t *testing.T) {
 	conn := MockConn{}
 	store := NewInMemoryStore()
 	store.Store("testfile.txt", []byte("data"))
-	server := NewServer(&conn, store)
+	server := NewServer(&conn, store, ioutil.Discard)
 
 	addr := new(FakeAddr)
 	sender := make(chan []byte)
