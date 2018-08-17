@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+
+	"igneous.io/tftp"
 )
 
 var files map[string][]byte
@@ -23,8 +25,8 @@ func main() {
 	}
 	defer conn.Close()
 
-	store := NewInMemoryStore()
-	server := NewServer(conn, store)
+	store := tftp.NewInMemoryStore()
+	server := tftp.NewServer(conn, store)
 
-	server.start()
+	server.Start()
 }
